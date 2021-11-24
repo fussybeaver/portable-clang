@@ -74,7 +74,7 @@ jobs:
       - name: Build GCC Docker Image
         run: |
           chmod +x pclang
-          ./pclang docker-image-gcc --dest image-gcc.tar.zst
+          RUST_LOG=bollard=debug ./pclang docker-image-gcc --dest image-gcc.tar.zst
 
       - name: Upload Docker Image
         uses: actions/upload-artifact@v2

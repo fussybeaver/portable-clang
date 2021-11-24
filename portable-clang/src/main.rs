@@ -11,6 +11,7 @@ mod logging;
 mod tar;
 
 fn main() {
+    env_logger::try_init().unwrap();
     let exit_code = match cli::run() {
         Ok(code) => code,
         Err(e) => {
