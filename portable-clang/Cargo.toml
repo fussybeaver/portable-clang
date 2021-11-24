@@ -11,7 +11,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1.0"
-bollard = { version = "0.11", features = ["ssl"] }
+bollard = { git = "https://github.com/fussybeaver/bollard", rev = "d0431791cdaca250d96f5582c4901836acca070d", features = ["ssl"] }
 clap = "2.33"
 dirs = "4.0"
 futures-util = "0.3"
