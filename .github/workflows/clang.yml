@@ -66,6 +66,8 @@ jobs:
       - build-pclang
     runs-on: ubuntu-20.04
     steps:
+      - uses: actions/checkout@v2
+
       - name: Fetch pclang Executable
         uses: actions/download-artifact@v2
         with:
@@ -83,6 +85,30 @@ jobs:
           path: image-gcc.tar.zst
           retention-days: 7
 
+  docker-image-glibc:
+    needs:
+      - build-pclang
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Fetch pclang Executable
+        uses: actions/download-artifact@v2
+        with:
+          name: pclang-linux-x86_64
+
+      - name: Build glibc Docker Image
+        run: |
+          chmod +x pclang
+          ./pclang docker-image-glibc --dest image-glibc.tar.zst
+
+      - name: Upload Docker Image
+        uses: actions/upload-artifact@v2
+        with:
+          name: image-glibc
+          path: image-glibc.tar.zst
+          retention-days: 7
+
   build-gcc:
     needs:
       - build-pclang
@@ -94,6 +120,8 @@ jobs:
       SCCACHE_BUCKET: 'portable-clang-sccache'
 
     steps:
+      - uses: actions/checkout@v2
+
       - name: Fetch pclang Executable
         uses: actions/download-artifact@v2
         with:
@@ -135,6 +163,8 @@ jobs:
       SCCACHE_BUCKET: 'portable-clang-sccache'
 
     steps:
+      - uses: actions/checkout@v2
+
       - name: Fetch pclang Executable
         uses: actions/download-artifact@v2
         with:
@@ -165,4 +195,34 @@ jobs:
         with:
           name: clang
           path: clang.tar.zst
+          retention-days: 7
+
+  glibc-abis:
+    needs:
+      - build-pclang
+      - docker-image-glibc
+    runs-on: ubuntu-20.04
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Fetch pclang Executable
+        uses: actions/download-artifact@v2
+        with:
+          name: pclang-linux-x86_64
+
+      - name: Fetch glibc Docker Image
+        uses: actions/download-artifact@v2
+        with:
+          name: image-glibc
+
+      - name: Generate glibc ABI Data
+        run: |
+          chmod +x pclang
+          ./pclang glibc-abis --image=image-glibc.tar.zst glibc-abis.tar.zst
+
+      - name: Upload glibc ABIs Archive
+        uses: actions/upload-artifact@v2
+        with:
+          name: glibc-abis
+          path: glibc-abis.tar.zst
           retention-days: 7

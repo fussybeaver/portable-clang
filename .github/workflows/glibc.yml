@@ -1,96 +1,9 @@
 on:
   push:
 jobs:
-  build-pclang:
-    runs-on: ubuntu-20.04
-    env:
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      SCCACHE_BUCKET: 'portable-clang-sccache'
-      RUSTC_WRAPPER: sccache
-    steps:
-      - uses: actions/checkout@v2
-
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: 1.56.1
-          default: true
-          profile: minimal
-
-      - name: Install sccache
-        run: |
-          wget -O sccache.tar.gz --progress dot:mega https://github.com/mozilla/sccache/releases/download/v0.2.15/sccache-v0.2.15-x86_64-unknown-linux-musl.tar.gz
-          echo "2eb9d5e43845fffb49c727b0518c581b66c1c6bf  sccache.tar.gz" | shasum --check
-          tar -xvzf sccache.tar.gz
-          mv sccache-v0.2.15-x86_64-unknown-linux-musl/sccache /usr/share/rust/.cargo/bin/sccache
-          chmod +x /usr/share/rust/.cargo/bin/sccache
-
-      - name: Build pclang Binary
-        run: |
-          sccache --start-server
-          cargo build --release --bin pclang
-          sccache --stop-server
-
-      - name: Upload pclang Executable
-        uses: actions/upload-artifact@v2
-        with:
-          name: pclang-linux-x86_64
-          path: target/release/pclang
-
-  docker-image-glibc:
+  build:
     needs:
-      - build-pclang
-    runs-on: ubuntu-20.04
-    steps:
-      - name: Fetch pclang Executable
-        uses: actions/download-artifact@v2
-        with:
-          name: pclang-linux-x86_64
-
-      - name: Build glibc Docker Image
-        run: |
-          chmod +x pclang
-          ./pclang docker-image-glibc --dest image-glibc.tar.zst
-
-      - name: Upload Docker Image
-        uses: actions/upload-artifact@v2
-        with:
-          name: image-glibc
-          path: image-glibc.tar.zst
-          retention-days: 7
-
-  glibc-abis:
-    needs:
-      - build-pclang
-      - docker-image-glibc
-    runs-on: ubuntu-20.04
-    steps:
-      - name: Fetch pclang Executable
-        uses: actions/download-artifact@v2
-        with:
-          name: pclang-linux-x86_64
-
-      - name: Fetch glibc Docker Image
-        uses: actions/download-artifact@v2
-        with:
-          name: image-glibc
-
-      - name: Generate glibc ABI Data
-        run: |
-          chmod +x pclang
-          ./pclang glibc-abis --image=image-glibc.tar.zst glibc-abis.tar.zst
-
-      - name: Upload glibc ABIs Archive
-        uses: actions/upload-artifact@v2
-        with:
-          name: glibc-abis
-          path: glibc-abis.tar.zst
-          retention-days: 7
-
-  glibc-build:
-    needs:
-      - build-pclang
-      - docker-image-glibc
+      - docker-image
     strategy:
       fail-fast: false
       matrix:
@@ -273,26 +186,28 @@ jobs:
             compiler: x86_64-linux-gnu
           - glibc: x86_64-linux-gnu-x32-static-pie
             compiler: x86_64-linux-gnu
+
     runs-on: ubuntu-20.04
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
       SCCACHE_BUCKET: 'portable-clang-sccache'
-    steps:
-      - name: Fetch pclang Executable
-        uses: actions/download-artifact@v2
-        with:
-          name: pclang-linux-x86_64
 
-      - name: Fetch glibc Docker Image
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Fetch Docker Image
         uses: actions/download-artifact@v2
         with:
           name: image-glibc
 
+      - name: Import Docker Image
+        run: |
+          zstd -d --stdout image-glibc.tar.zst | docker load
+
       - name: Build glibc
         run: |
-          chmod +x pclang
-          ./pclang build-glibc --image=image-glibc.tar.zst --compiler=${{ matrix.config.compiler }} --glibc=${{ matrix.config.glibc }} .
+          ./scripts/ci-glibc-build.sh ${{ matrix.config.compiler }} ${{ matrix.config.glibc }}
 
       - name: Upload glibc
         uses: actions/upload-artifact@v2
@@ -301,28 +216,21 @@ jobs:
           path: glibc-${{ matrix.config.glibc }}.tar.zst
           retention-days: 7
 
-  glibc-unify:
+  unify:
     needs:
-      - build-pclang
-      - glibc-build
+      - build
     runs-on: ubuntu-20.04
     steps:
-      - name: Fetch pclang Executable
-        uses: actions/download-artifact@v2
-        with:
-          name: pclang-linux-x86_64
+      - uses: actions/checkout@v2
 
       - name: Fetch glibc Builds
         uses: actions/download-artifact@v2
         with:
           name: glibc-individual
-          path: glibcs
 
       - name: Unify glibc builds
         run: |
-          chmod +x pclang
-          ./pclang glibc-unify --dest-tar-zst glibc-all.tar.zst glibcs/*.tar.zst
-          ./pclang glibc-unify --headers-only --dest-tar-zst glibc-headers.tar.zst glibcs/*.tar.zst
+          scripts/ci-glibc-unify.sh
 
       - name: Upload Unified glibc
         uses: actions/upload-artifact@v2

@@ -132,7 +132,6 @@ const GCC_DOCKERFILE: &str = indoc! {r#"
 "#};
 
 const GLIBC_DOCKERFILE: &str = indoc! {r#"
-    RUN mkdir /toolchains && chown build:build /toolchains
     RUN apt-get install \
         autoconf \
         automake \
@@ -196,9 +195,16 @@ pub async fn build_image(
     Err(anyhow!("error building image"))
 }
 
-/// Load image tar data.
-pub async fn load_image_tar(logger: &Logger, docker: &Docker, tar_data: Vec<u8>) -> Result<String> {
+/// Load a tar.zst file into Docker and return the image id.
+pub async fn load_image_tar_zst(
+    logger: &Logger,
+    docker: &Docker,
+    reader: impl Read,
+) -> Result<String> {
+    let tar_data = zstd::decode_all(reader).context("zstd decompressing image data")?;
+
     let options = ImportImageOptions::default();
+
     let mut stream = docker.import_image(options, Body::from(tar_data), None);
 
     while let Some(info) = stream.try_next().await? {
@@ -224,31 +230,6 @@ pub async fn load_image_tar(logger: &Logger, docker: &Docker, tar_data: Vec<u8>)
     }
 
     Err(anyhow!("error loading image"))
-}
-
-/// Load a tar.zst file into Docker and return the image id.
-pub async fn load_image_tar_zst(
-    logger: &Logger,
-    docker: &Docker,
-    reader: impl Read,
-) -> Result<String> {
-    let tar_data = zstd::decode_all(reader).context("zstd decompressing image data")?;
-
-    // In CI we see JSON decode errors intermittently. The root cause is unknown.
-    // https://github.com/fussybeaver/bollard/issues/171. We retry the operation
-    // multiple times as a workaround.
-    for attempt in 0..5 {
-        match load_image_tar(logger, docker, tar_data.clone()).await {
-            Ok(image) => {
-                return Ok(image);
-            }
-            Err(e) => {
-                warn!(logger, "attempt #{}: image load failed: {:?}", attempt, e);
-            }
-        }
-    }
-
-    Err(anyhow!("image load failed multiple times"))
 }
 
 async fn run_and_log_container(
@@ -466,6 +447,10 @@ pub async fn build_image_glibc(
             true,
         ),
     )?;
+    tar.files.add_file_entry(
+        "scripts/glibc-unify.py",
+        FileEntry::new_from_data(include_bytes!("scripts/glibc-unify.py").to_vec(), true),
+    )?;
 
     let dockerfile = format!(
         "{}\n{}\n{}",
@@ -614,12 +599,8 @@ pub async fn bootstrap_gcc(
         .await
         .context("running container")?;
 
-    let binutils_tar = tar_from_directory(
-        logger,
-        out_dir.join("binutils"),
-        Some(Path::new("binutils")),
-    )?;
-    let gcc_tar = tar_from_directory(logger, out_dir.join("gcc"), Some(Path::new("gcc")))?;
+    let binutils_tar = tar_from_directory(logger, out_dir.join("binutils"), Some("binutils"))?;
+    let gcc_tar = tar_from_directory(logger, out_dir.join("gcc"), Some("gcc"))?;
 
     let binutils_tar_zst = zstd::encode_all(Cursor::new(binutils_tar), ZSTD_COMPRESSION_LEVEL)?;
     let gcc_tar_zst = zstd::encode_all(Cursor::new(gcc_tar), ZSTD_COMPRESSION_LEVEL)?;
@@ -687,7 +668,7 @@ pub async fn bootstrap_clang(
         .await
         .context("running container")?;
 
-    let clang_tar = tar_from_directory(logger, out_dir.join("clang"), Some(Path::new("clang")))?;
+    let clang_tar = tar_from_directory(logger, out_dir.join("clang"), Some("clang"))?;
     warn!(logger, "compressing clang tarball");
     let clang_tar_zst = zstd::encode_all(Cursor::new(clang_tar), ZSTD_COMPRESSION_LEVEL)?;
 
@@ -746,53 +727,4 @@ pub async fn glibc_abis(logger: &Logger, docker: &Docker, image_id: &str) -> Res
     }
 
     Ok(m)
-}
-
-pub async fn glibc_build_single(
-    logger: &Logger,
-    docker: &Docker,
-    image_id: &str,
-    compiler: &str,
-    glibc: &str,
-) -> Result<Vec<u8>> {
-    let temp_dir = tempfile::Builder::new().prefix("pclang-").tempdir()?;
-    let out_dir = temp_dir.path();
-    let mut permissions = out_dir
-        .metadata()
-        .context("retrieving outputs directory metadata")?
-        .permissions();
-    permissions.set_mode(0o0777);
-    std::fs::set_permissions(&out_dir, permissions)
-        .context("setting temp directory permissions")?;
-
-    let options = CreateContainerOptions::<String>::default();
-
-    let mut config = ContainerConfig::<String> {
-        attach_stdin: Some(false),
-        attach_stdout: Some(true),
-        attach_stderr: Some(true),
-        tty: Some(true),
-        cmd: Some(vec![
-            "/usr/bin/docker-glibc-build.sh".into(),
-            compiler.into(),
-            glibc.into(),
-        ]),
-        image: Some(image_id.into()),
-        host_config: Some(HostConfig {
-            auto_remove: Some(true),
-            binds: Some(vec![format!("{}:/out", out_dir.display())]),
-            ..Default::default()
-        }),
-        ..Default::default()
-    };
-
-    add_container_envs(&mut config)?;
-
-    run_and_log_container(logger, docker, options, config)
-        .await
-        .context("running container")?;
-
-    let glibc_path = out_dir.join(glibc);
-
-    tar_from_directory(logger, glibc_path, Some(Path::new(glibc)))
 }

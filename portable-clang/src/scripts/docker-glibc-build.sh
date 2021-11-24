@@ -7,8 +7,9 @@ set -ex
 COMPILER=$1
 GLIBC=$2
 
-/usr/bin/docker-extract-sccache.sh
-export PATH=/toolchains/bin:$PATH
+# sccache speeds up builds significantly. So build with more parallelism than
+# default of number of cores.
+PARALLEL=$(python3 -c 'import multiprocessing; print(multiprocessing.cpu_count() * 4)')
 
 SCCACHE_ERROR_LOG=~/sccache.txt SCCACHE_LOG=info sccache --start-server
 
